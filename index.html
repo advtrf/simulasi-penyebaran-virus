@@ -203,12 +203,14 @@ function verdict(cup){
 const STEP_LABELS = ['Setup Peran','Ronde 1','Ronde 2','Ronde 3','Hasil & Uji'];
 function goto(step){ state.step = step; render(); }
 
+function numGivers1(){ return Math.floor(state.students.length/2); }
+
 function canProceedSetup(){
   const roles = state.students.map(s=>s.role);
   return roles.filter(r=>r==='virus').length===1 && roles.filter(r=>r==='vaccine').length===1;
 }
 function canProceedR1(){
-  if (state.r1.givers.length!==3) return false;
+  if (state.r1.givers.length!==numGivers1()) return false;
   const receivers = otherStudents(state.r1.givers).map(s=>s.id);
   return receivers.every(id => state.r1.assign[id]!=null);
 }
@@ -218,11 +220,16 @@ function canProceedR2(){
   return receivers.every(id => state.r2.assign[id]!=null);
 }
 function canProceedR3(){
+  const N = state.students.length;
+  if (N % 2 === 0){
+    const needed = N/2;
+    return state.r3.pairs.length===needed && state.r3.pairs.every(p=>p[0]!=null && p[1]!=null);
+  }
   if (state.r3.special==null || state.r3.mode==null) return false;
   if (state.r3.mode==='two'){
     if (state.r3.partners[0]==null || state.r3.partners[1]==null || state.r3.partners[0]===state.r3.partners[1]) return false;
   }
-  const totalNeeded = state.r3.mode==='two' ? 2 : 3;
+  const totalNeeded = state.r3.mode==='two' ? (N-3)/2 : (N-1)/2;
   if (state.r3.pairs.length !== totalNeeded) return false;
   return state.r3.pairs.every(p=>p[0]!=null && p[1]!=null);
 }
@@ -248,10 +255,47 @@ function renderStepper(){
 }
 
 // --- STEP 0: SETUP ---
+const NAME_POOL = ['A','B','C','D','E','F','G'];
+function normalizeRoles(students){
+  let virusIdx = students.findIndex(s=>s.role==='virus');
+  if (virusIdx===-1){ virusIdx=0; students[0].role='virus'; }
+  students.forEach((s,i)=>{ if(i!==virusIdx && s.role==='virus') s.role='water'; });
+  let vaccineIdx = students.findIndex(s=>s.role==='vaccine');
+  if (vaccineIdx===-1 || vaccineIdx===virusIdx){
+    const fallback = students.findIndex((s,i)=> i!==virusIdx);
+    vaccineIdx = fallback===-1 ? virusIdx : fallback;
+    if (vaccineIdx!==virusIdx) students[vaccineIdx].role='vaccine';
+  }
+  students.forEach((s,i)=>{ if(i!==vaccineIdx && s.role==='vaccine') s.role='water'; });
+}
+function setStudentCount(newN){
+  const old = state.students;
+  const next = [];
+  for (let i=0;i<newN;i++){
+    next.push(old[i] ? {...old[i]} : {id:i, name:NAME_POOL[i]||('S'+(i+1)), role:'water'});
+  }
+  normalizeRoles(next);
+  state.students = next;
+  state.r1 = {givers:[], assign:{}};
+  state.r2 = {excluded:null, assign:{}};
+  state.r3 = {special:null, mode:null, partners:[null,null], pairs:[]};
+  state.tested = false;
+}
 function renderSetup(){
   const card = el('div',{class:'card'});
-  card.appendChild(el('h2',{},'Tentukan Peran 7 Siswa'));
+  card.appendChild(el('h2',{},'Tentukan Peran Siswa'));
   card.appendChild(el('p',{class:'desc'},'Ubah nama jika perlu, lalu pilih siapa pembawa virus (NaOH) dan siapa pembawa vaksin (CH₃COOH). Sisanya otomatis air biasa. Atau klik "Acak Peran" untuk mengundi.'));
+
+  const countRow = el('div',{style:'margin-bottom:18px;'});
+  countRow.appendChild(el('div',{class:'note',style:'margin-bottom:6px;'},'Jumlah siswa dalam kelompok:'));
+  const countSel = el('select',{style:'background:var(--panel2);color:var(--text);border:1px solid var(--line);border-radius:6px;padding:7px 10px;font-family:\'IBM Plex Mono\',monospace;font-size:12.5px;', onchange:(e)=>{ setStudentCount(Number(e.target.value)); render(); }});
+  [5,6,7].forEach(n=>{
+    const opt = el('option',{value:n}, n+' siswa');
+    if (state.students.length===n) opt.setAttribute('selected','selected');
+    countSel.appendChild(opt);
+  });
+  countRow.appendChild(countSel);
+  card.appendChild(countRow);
 
   const grid = el('div',{class:'grid7'});
   state.students.forEach(s=>{
@@ -287,7 +331,7 @@ function renderSetup(){
     shuffle(ids);
     state.students.forEach(s=>s.role='water');
     studentById(ids[0]).role='virus';
-    studentById(ids[1]).role='vaccine';
+    if (ids.length>1) studentById(ids[1]).role='vaccine';
     render();
   }},'🎲 Acak Peran'));
   const next = el('button',{class:'primary', disabled: !canProceedSetup(), onclick:()=>goto(1)},'Lanjut ke Ronde 1 →');
@@ -299,16 +343,20 @@ function shuffle(arr){ for(let i=arr.length-1;i>0;i--){const j=Math.floor(Math.r
 
 // --- STEP 1: ROUND 1 ---
 function renderRound1(){
+  const N = state.students.length;
+  const g1 = numGivers1();
+  const recvCount = N - g1;
   const card = el('div',{class:'card'});
-  card.appendChild(el('h2',{},'Ronde 1 — Pilih 3 Pemberi'));
-  card.appendChild(el('p',{class:'desc'},'Pilih tepat 3 siswa sebagai pemberi. 4 siswa sisanya hanya menerima (tidak boleh memberi ke sesama pemberi). Karena 3 pemberi untuk 4 penerima, salah satu pemberi akan memberi ke dua orang.'));
+  card.appendChild(el('h2',{}, `Ronde 1 — Pilih ${g1} Pemberi`));
+  const mismatchNote = g1!==recvCount ? ` Karena ${g1} pemberi untuk ${recvCount} penerima, salah satu pemberi akan memberi ke dua orang.` : '';
+  card.appendChild(el('p',{class:'desc'},`Pilih tepat ${g1} siswa sebagai pemberi. ${recvCount} siswa sisanya hanya menerima (tidak boleh memberi ke sesama pemberi).${mismatchNote}`));
 
   const chkRow = el('div',{class:'chk-row'});
   state.students.forEach(s=>{
     const checked = state.r1.givers.includes(s.id);
     const chk = el('div',{class:'chk'+(checked?' checked':''), onclick:()=>{
       if (checked){ state.r1.givers = state.r1.givers.filter(id=>id!==s.id); }
-      else { if (state.r1.givers.length<3) state.r1.givers.push(s.id); }
+      else { if (state.r1.givers.length<g1) state.r1.givers.push(s.id); }
       // reset assignments that referenced removed giver
       Object.keys(state.r1.assign).forEach(k=>{ if(!state.r1.givers.includes(state.r1.assign[k])) delete state.r1.assign[k]; });
       render();
@@ -317,9 +365,9 @@ function renderRound1(){
     chkRow.appendChild(chk);
   });
   card.appendChild(chkRow);
-  card.appendChild(el('p',{class:'note'}, `Pemberi terpilih: ${state.r1.givers.length}/3`));
+  card.appendChild(el('p',{class:'note'}, `Pemberi terpilih: ${state.r1.givers.length}/${g1}`));
 
-  if (state.r1.givers.length===3){
+  if (state.r1.givers.length===g1){
     card.appendChild(el('h2',{style:'margin-top:18px;'},'Setiap penerima, siapa yang memberi ke dia?'));
     const receivers = otherStudents(state.r1.givers);
     receivers.forEach(r=>{
@@ -356,8 +404,8 @@ function initRound2Defaults(){
 function renderRound2(){
   const card = el('div',{class:'card'});
   card.appendChild(el('h2',{},'Ronde 2 — Giliran Sebaliknya'));
-  const pool = otherStudents(state.r1.givers); // the 4 who received in round1
-  card.appendChild(el('p',{class:'desc'},`Dari 4 siswa (${pool.map(s=>s.name).join(', ')}), pilih 1 yang TIDAK memberi ronde ini. 3 sisanya memberi ke 3 pemberi ronde 1 (${state.r1.givers.map(id=>studentById(id).name).join(', ')}), yang sekarang jadi penerima.`));
+  const pool = otherStudents(state.r1.givers); // those who only received in round1
+  card.appendChild(el('p',{class:'desc'},`Dari ${pool.length} siswa (${pool.map(s=>s.name).join(', ')}), pilih 1 yang TIDAK memberi ronde ini. ${pool.length-1} sisanya memberi ke ${state.r1.givers.length} pemberi ronde 1 (${state.r1.givers.map(id=>studentById(id).name).join(', ')}), yang sekarang jadi penerima.`));
 
   const radioRow = el('div',{class:'radio-row'});
   pool.forEach(s=>{
@@ -400,10 +448,56 @@ function renderRound2(){
 }
 
 // --- STEP 3: ROUND 3 ---
+function renderPairBuilder(card, remainingPool, pairsNeeded){
+  while(state.r3.pairs.length < pairsNeeded) state.r3.pairs.push([null,null]);
+  while(state.r3.pairs.length > pairsNeeded) state.r3.pairs.pop();
+
+  card.appendChild(el('h2',{style:'margin-top:14px;'},'Pasangkan siswa'));
+  for (let i=0;i<pairsNeeded;i++){
+    const usedElsewhere = state.r3.pairs.flatMap((p,j)=> j===i? [] : p).filter(v=>v!=null);
+    const row = el('div',{class:'assign-row'});
+    row.appendChild(el('div',{class:'name'},'Pasangan '+(i+1)));
+    const wrap = el('div',{style:'display:flex;gap:8px;'});
+    [0,1].forEach(side=>{
+      const sel = el('select',{onchange:(e)=>{
+        state.r3.pairs[i][side] = e.target.value===''?null:Number(e.target.value);
+        render();
+      }});
+      sel.appendChild(el('option',{value:''},'—'));
+      remainingPool.forEach(id=>{
+        if (usedElsewhere.includes(id)) return;
+        if (state.r3.pairs[i][1-side]===id) return;
+        const opt = el('option',{value:id}, studentById(id).name);
+        if (state.r3.pairs[i][side]===id) opt.setAttribute('selected','selected');
+        sel.appendChild(opt);
+      });
+      wrap.appendChild(sel);
+    });
+    row.appendChild(wrap);
+    card.appendChild(row);
+  }
+}
+
 function renderRound3(){
+  const N = state.students.length;
   const card = el('div',{class:'card'});
   card.appendChild(el('h2',{},'Ronde 3 — Tukar Berpasangan'));
-  card.appendChild(el('p',{class:'desc'},'Semua 7 siswa saling bertukar. Karena jumlahnya ganjil, pilih 1 siswa "unik": dia bertukar dengan DUA teman (dua kali tukar), ATAU dia tidak bertukar sama sekali. Siswa lainnya wajib tetap berpasangan satu-satu.'));
+
+  if (N % 2 === 0){
+    card.appendChild(el('p',{class:'desc'},`Semua ${N} siswa saling bertukar. Karena jumlahnya genap, semua bisa langsung berpasangan satu-satu tanpa ada yang tersisa.`));
+    const pairsNeeded = N/2;
+    const remainingPool = state.students.map(s=>s.id);
+    renderPairBuilder(card, remainingPool, pairsNeeded);
+
+    card.appendChild(renderNetworkPreview());
+    const btns = el('div',{class:'btnrow'});
+    btns.appendChild(el('button',{onclick:()=>goto(2)},'← Kembali'));
+    btns.appendChild(el('button',{class:'primary', disabled: !canProceedR3(), onclick:()=>{state.tested=false; goto(4);}},'Lihat Hasil →'));
+    card.appendChild(btns);
+    return card;
+  }
+
+  card.appendChild(el('p',{class:'desc'},`Semua ${N} siswa saling bertukar. Karena jumlahnya ganjil, pilih 1 siswa "unik": dia bertukar dengan DUA teman (dua kali tukar), ATAU dia tidak bertukar sama sekali. Siswa lainnya wajib tetap berpasangan satu-satu.`));
 
   const specSel = el('select',{onchange:(e)=>{
     state.r3.special = e.target.value===''?null:Number(e.target.value);
@@ -452,42 +546,15 @@ function renderRound3(){
   let pairsNeeded = 0;
   if (state.r3.special!=null && state.r3.mode==='two' && state.r3.partners[0]!=null && state.r3.partners[1]!=null){
     excludeIds = [state.r3.special, state.r3.partners[0], state.r3.partners[1]];
-    pairsNeeded = 2;
+    pairsNeeded = (N-3)/2;
   } else if (state.r3.special!=null && state.r3.mode==='out'){
     excludeIds = [state.r3.special];
-    pairsNeeded = 3;
+    pairsNeeded = (N-1)/2;
   }
 
   if (pairsNeeded>0){
-    while(state.r3.pairs.length < pairsNeeded) state.r3.pairs.push([null,null]);
-    while(state.r3.pairs.length > pairsNeeded) state.r3.pairs.pop();
-
-    card.appendChild(el('h2',{style:'margin-top:14px;'},'Pasangkan sisa siswa'));
     const remainingPool = otherStudents(excludeIds).map(s=>s.id);
-
-    for (let i=0;i<pairsNeeded;i++){
-      const usedElsewhere = state.r3.pairs.flatMap((p,j)=> j===i? [] : p).filter(v=>v!=null);
-      const row = el('div',{class:'assign-row'});
-      row.appendChild(el('div',{class:'name'},'Pasangan '+(i+1)));
-      const wrap = el('div',{style:'display:flex;gap:8px;'});
-      [0,1].forEach(side=>{
-        const sel = el('select',{onchange:(e)=>{
-          state.r3.pairs[i][side] = e.target.value===''?null:Number(e.target.value);
-          render();
-        }});
-        sel.appendChild(el('option',{value:''},'—'));
-        remainingPool.forEach(id=>{
-          if (usedElsewhere.includes(id)) return;
-          if (state.r3.pairs[i][1-side]===id) return;
-          const opt = el('option',{value:id}, studentById(id).name);
-          if (state.r3.pairs[i][side]===id) opt.setAttribute('selected','selected');
-          sel.appendChild(opt);
-        });
-        wrap.appendChild(sel);
-      });
-      row.appendChild(wrap);
-      card.appendChild(row);
-    }
+    renderPairBuilder(card, remainingPool, pairsNeeded);
   }
 
   card.appendChild(renderNetworkPreview());
